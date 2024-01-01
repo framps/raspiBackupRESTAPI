@@ -52,6 +52,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
@@ -67,6 +68,7 @@ const (
 var (
 	defaultKeep = 3
 	defaultType = "rsync"
+	defaultPath = "/backup"
 )
 
 // VersionResponse -
@@ -91,13 +93,46 @@ type ExecutionResponse struct {
 
 // ParameterPayload - payload with all the invocation parameters
 type ParameterPayload struct {
-	Target string  `json:"target" binding:"required"`
-	Type   *string `json:"type,omitempty"`
-	Keep   *int    `json:"keep,omitempty"`
+	Path *string `json:"path",omitEmpty"`
+	Type *string `json:"type",omitempty`
+	Keep *int    `json:"keep,omitempty"`
 }
 
 func logf(format string, a ...interface{}) {
 	fmt.Printf("SERVER --- "+format, a...)
+}
+
+// RequestLogger - log requests
+func RequestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		t := time.Now()
+
+		c.Next()
+
+		latency := time.Since(t)
+
+		logf("%s %s %s %s\n",
+			c.Request.Method,
+			c.Request.RequestURI,
+			c.Request.Proto,
+			latency,
+		)
+	}
+}
+
+// ResponseLogger - log responses
+func ResponseLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
+
+		c.Next()
+
+		logf("%d %s %s\n",
+			c.Writer.Status(),
+			c.Request.Method,
+			c.Request.RequestURI,
+		)
+	}
 }
 
 // NoRouteHandler -
@@ -179,18 +214,21 @@ func BackupHandler(c *gin.Context) {
 	logf("Request received: %+v\n", parm)
 	var args string
 
+	if parm.Path == nil {
+		parm.Path = &defaultPath
+	}
 	if parm.Keep == nil {
 		parm.Keep = &defaultKeep
 	}
 	if parm.Type == nil {
 		parm.Type = &defaultType
 	}
-	
+
 	args = "-t " + *parm.Type
 
 	args += " -k " + strconv.Itoa(*parm.Keep)
 
-	args += " " + parm.Target
+	args += " " + *parm.Path
 
 	command := "sudo " + Executable
 	combined := command + " " + args
@@ -219,7 +257,7 @@ func BackupHandler(c *gin.Context) {
 // NewEngine - Return a new gine engine
 func NewEngine(passwordSet bool, credentialMap gin.Accounts) *gin.Engine {
 
-	api := gin.New()
+	api := gin.Default()
 
 	root := api.Group("")
 	var v1 *gin.RouterGroup
@@ -231,8 +269,11 @@ func NewEngine(passwordSet bool, credentialMap gin.Accounts) *gin.Engine {
 	}
 
 	api.LoadHTMLGlob("templates/*.html")
-	api.Use(static.Serve("/assets", static.LocalFile("assets", false)))
+	api.Use(static.Serve("/", static.LocalFile("./assets", true)))
 	api.NoRoute(NoRouteHandler)
+
+	api.Use(RequestLogger())
+	api.Use(ResponseLogger())
 
 	root.GET("/", IndexHandler)
 	v1.POST("/raspiBackup", BackupHandler)
