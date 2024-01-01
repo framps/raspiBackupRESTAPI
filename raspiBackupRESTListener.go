@@ -12,7 +12,7 @@ package main
  and add lines in the format 'userid:password' to define access credetials.
 
  To invoke raspiBackup via REST use follwing command:
-     curl -u userid:password -H "Content-Type: application/json" -X POST -d '{"target":"/backup","type":"tar", "keep": 3}' http://<raspiHost>:8080/v1/raspiBackup
+     curl -u userid:password -H "Content-Type: application/json" -X POST -d '{"path":"/backup","type":"rsync", "keep": 3}' http://<raspiHost>:8080/v1/raspiBackup
 
 Other endpoints:
 GET /v1/raspiBackup - returns version in json
@@ -92,9 +92,9 @@ type ExecutionResponse struct {
 
 // ParameterPayload - payload with all the invocation parameters
 type ParameterPayload struct {
-	Path string `json:"path"`
-	Type string `json:"type`
-	Keep int    `json:"keep`
+	Path string `json:"path" binding:"required"`
+	Type string `json:"type" binding:"required"`
+	Keep int    `json:"keep" binding:"required"`
 }
 
 func logf(format string, a ...interface{}) {
@@ -166,11 +166,7 @@ func ParamHandler(c *gin.Context) {
 // BackupHandler - handles requests for raspiBackup
 func BackupHandler(c *gin.Context) {
 
-	parm := ParameterPayload{
-		Keep: defaultKeep,
-		Type: defaultType,
-		Path: defaultPath,
-	}
+	var parm ParameterPayload
 
 	err := c.BindJSON(&parm)
 	if err != nil {
@@ -186,9 +182,7 @@ func BackupHandler(c *gin.Context) {
 	var args string
 
 	args = "-t " + parm.Type
-
 	args += " -k " + strconv.Itoa(parm.Keep)
-
 	args += " " + parm.Path
 
 	command := "sudo " + Executable
@@ -207,6 +201,9 @@ func BackupHandler(c *gin.Context) {
 	logf("Executing command: %s\n", combined)
 
 	out, err := exec.Command("bash", "-c", combined).CombinedOutput()
+
+	logf("Command exit: %s\n", err.Error())
+
 	if err != nil {
 		c.JSON(http.StatusBadRequest, ErrorResponse{err.Error(), string(out)})
 		return
