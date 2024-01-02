@@ -47,7 +47,6 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -55,7 +54,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+var logger *zap.Logger
 
 const (
 	// Executable - path to executable
@@ -64,10 +67,12 @@ const (
 	PasswordFile = "/usr/local/etc/raspiBackup.auth"
 )
 
-var (
+const (
 	defaultKeep = 3
 	defaultType = "rsync"
 	defaultPath = "/backup"
+	logFile     = "./raspiBackupRESTListener.log"
+	errFile     = "./raspiBackupRESTListener.err"
 )
 
 // VersionResponse -
@@ -102,10 +107,6 @@ type OptionsPayload struct {
 	Options string `json:"options" binding:"required"`
 }
 
-func logf(format string, a ...interface{}) {
-	fmt.Printf("SERVER --- "+format, a...)
-}
-
 // NoRouteHandler -
 func NoRouteHandler(c *gin.Context) {
 	c.JSON(http.StatusNotFound, ErrorResponse{"PAGE_NOT_FOUND", ""})
@@ -125,7 +126,7 @@ func VersionHandler(c *gin.Context) {
 	}
 
 	command := "sudo " + Executable + " --version"
-	logf("Executing command: %s\n", command)
+	logger.Info(fmt.Sprintf("Executing command: %s\n", command))
 
 	out, err := exec.Command("bash", "-c", command).CombinedOutput()
 	if err != nil {
@@ -159,7 +160,7 @@ func OptionsHandler(c *gin.Context) {
 	}
 
 	command := "sudo " + Executable + " " + parm.Options
-	logf("Executing command: %s\n", command)
+	logger.Info(fmt.Sprintf("Executing command: %s\n", command))
 
 	out, err := exec.Command("bash", "-c", command).CombinedOutput()
 	if err != nil {
@@ -188,7 +189,7 @@ func ParamHandler(c *gin.Context) {
 	param := c.Param("param")
 	optional := c.Param("optional")
 
-	fmt.Printf("Param: %s Optional: %s\n", param, optional)
+	logger.Info(fmt.Sprintf("Param: %s Optional: %s\n", param, optional))
 
 	if len(param) == 0 {
 		c.JSON(400, gin.H{"param": param, "exists": false, "optional": optional})
@@ -212,7 +213,7 @@ func BackupHandler(c *gin.Context) {
 	test := c.DefaultQuery("test", "0")
 	testEnabled := test == "1"
 
-	logf("Request received: %+v\n", parm)
+	logger.Info(fmt.Sprintf("Request received: %+v\n", parm))
 	var args string
 
 	args = "-t " + parm.Type
@@ -232,11 +233,11 @@ func BackupHandler(c *gin.Context) {
 		return
 	}
 
-	logf("Executing command: %s\n", combined)
+	logger.Info(fmt.Sprintf("Executing command: %s\n", combined))
 
 	out, err := exec.Command("bash", "-c", combined).CombinedOutput()
 
-	logf("Command exit: %s\n", err.Error())
+	logger.Info(fmt.Sprintf("Command exit: %s\n", err.Error()))
 
 	if err != nil {
 		c.JSON(http.StatusBadRequest, ErrorResponse{err.Error(), string(out)})
@@ -275,6 +276,20 @@ func NewEngine(passwordSet bool, credentialMap gin.Accounts) *gin.Engine {
 
 func main() {
 
+	config := zap.Config{
+		Level:            zap.NewAtomicLevelAt(zapcore.DebugLevel),
+		Development:      true,
+		Encoding:         "console",
+		EncoderConfig:    zap.NewProductionEncoderConfig(),
+		OutputPaths:      []string{logFile},
+		ErrorOutputPaths: []string{errFile},
+	}
+
+	// config.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	logger, _ = config.Build()
+	defer logger.Sync()
+
 	listenAddress := flag.String("a", ":8080", "Listen address of server. Default: :8080")
 	flag.Parse()
 
@@ -283,26 +298,26 @@ func main() {
 
 	// read credentials
 	if _, err := os.Stat(PasswordFile); err == nil {
-		logf("INFO: Reading %v\n", PasswordFile)
+		logger.Info(fmt.Sprintf("Reading %v\n", PasswordFile))
 		credentials, err := ioutil.ReadFile(PasswordFile)
 		if err != nil {
-			logf("%+v", err)
+			logger.Error(err.Error())
 			os.Exit(42)
 		}
 
 		f, err := os.Open(PasswordFile)
 		defer f.Close()
 		if err != nil {
-			log.Fatal(err)
+			logger.Error(err.Error())
 		}
 
 		fi, err := f.Stat()
 		if err != nil {
-			log.Fatal(err)
+			logger.Error(err.Error())
 		}
 
 		if mode := fi.Mode(); mode&077 != 0 {
-			logf("ERROR: %v not protected. %v\n", PasswordFile, mode)
+			logger.Error(fmt.Sprintf("%v not protected. %v\n", PasswordFile, mode))
 			os.Exit(42)
 		}
 
@@ -313,20 +328,20 @@ func main() {
 			if len(splitCredentials) == 2 {
 				uid, pwd := strings.TrimSpace(splitCredentials[0]), strings.TrimSpace(splitCredentials[1])
 				credentialMap[uid] = pwd
-				logf("INFO: Line %d: Found credential definition for userid '%s'\n", i, uid)
+				logger.Info(fmt.Sprintf("Line %d: Found credential definition for userid '%s'\n", i, uid))
 				passwordSet = true
 			} else {
 				if len(line) > 0 {
-					logf("WARN: Line %d skipped. Found '%s' which is not a valid credential definition. Expected 'userid:password'\n", i, line)
+					logger.Warn(fmt.Sprintf("Line %d skipped. Found '%s' which is not a valid credential definition. Expected 'userid:password'\n", i, line))
 				}
 			}
 		}
 
 	} else {
-		logf("WARN: REST API not protected with basic auth. %s not found\n", PasswordFile)
+		logger.Warn(fmt.Sprintf("REST API not protected with basic auth. %s not found\n", PasswordFile))
 	}
 
-	logf("INFO: Server now listening on port %s\n", *listenAddress)
+	logger.Info(fmt.Sprintf("Server now listening on port %s\n", *listenAddress))
 
 	api := NewEngine(passwordSet, credentialMap)
 
