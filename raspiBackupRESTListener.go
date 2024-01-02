@@ -12,18 +12,19 @@ package main
  and add lines in the format 'userid:password' to define access credetials.
 
  To invoke raspiBackup via REST use follwing command:
-     curl -u userid:password -H "Content-Type: application/json" -X POST -d '{"path":"/backup","type":"rsync", "keep": 3}' http://<raspiHost>:8080/v1/raspiBackup
+     curl -u userid:password -H "Content-Type: application/json" -X POST -d '{"path":"/backup","type":"rsync", "keep": 3}' http://<raspiHost>:8080/v1/raspiBackup/json
+ or
+ 	curl -u userid:password -H "Content-Type: application/json" -X POST -d '{"options":"-t rsync -k 3 /backup"}' http://<raspiHost>:8080/v1/raspiBackup
 
 Other endpoints:
-GET /v1/raspiBackup - returns version in json
+GET /v1/raspiBackup/version - returns version in json
 POST /v1/raspiBackup&test=1 - returns the payload passed in with defaults set in json
 GET /v1/raspiBackup/query?value=n - return a payload telling whether a query parm 'value' was passed and what's the value
 GET /v1/raspiBackup/param/:param - return a payload telling whether param was passed and what's the value
-GET / - returns a nice welcome html page
 
 #######################################################################################################################
  #
- #    Copyright (c) 2017-2018 framp at linux-tips-and-tricks dot de
+ #    Copyright (c) 2017-2024 framp at linux-tips-and-tricks dot de
  #
  #    This program is free software: you can redistribute it and/or modify
  #    it under the terms of the GNU General Public License as published by
@@ -53,7 +54,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
 )
 
@@ -97,6 +97,11 @@ type ParameterPayload struct {
 	Keep int    `json:"keep" binding:"required"`
 }
 
+// OptionsPayload - payload with all the invocation options
+type OptionsPayload struct {
+	Options string `json:"options" binding:"required"`
+}
+
 func logf(format string, a ...interface{}) {
 	fmt.Printf("SERVER --- "+format, a...)
 }
@@ -134,6 +139,35 @@ func VersionHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, VersionResponse{versionParts[1], versionParts[3], versionParts[5], versionParts[7]})
+}
+
+// OptionsHandler -
+func OptionsHandler(c *gin.Context) {
+
+	if _, err := os.Stat(Executable); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{fmt.Sprintf("%s", err), ""})
+		return
+	}
+
+	var parm OptionsPayload
+
+	err := c.BindJSON(&parm)
+	if err != nil {
+		msg := fmt.Sprintf("%+v", err)
+		c.JSON(http.StatusBadRequest, ErrorResponse{"Invalid payload received", msg})
+		return
+	}
+
+	command := "sudo " + Executable + " " + parm.Options
+	logf("Executing command: %s\n", command)
+
+	out, err := exec.Command("bash", "-c", command).CombinedOutput()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{err.Error(), string(out)})
+		return
+	}
+
+	c.JSON(http.StatusOK, ExecutionResponse{Output: string(out)})
 }
 
 // QueryHandler -
@@ -227,12 +261,12 @@ func NewEngine(passwordSet bool, credentialMap gin.Accounts) *gin.Engine {
 	}
 
 	api.LoadHTMLGlob("templates/*.html")
-	api.Use(static.Serve("/", static.LocalFile("./assets", true)))
 	api.NoRoute(NoRouteHandler)
 
 	root.GET("/", IndexHandler)
-	v1.POST("/raspiBackup", BackupHandler)
-	v1.GET("/raspiBackup", VersionHandler)
+	v1.POST("/raspiBackup/json", BackupHandler)
+	v1.POST("/raspiBackup", OptionsHandler)
+	v1.GET("/raspiBackup/version", VersionHandler)
 	v1.GET("/raspiBackup/query", QueryHandler)
 	v1.GET("/raspiBackup/param/:param/*optional", ParamHandler)
 
